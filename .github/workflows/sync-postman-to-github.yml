@@ -2,32 +2,24 @@ name: Sync Postman Collection to GitHub
 
 on:
   schedule:
-    - cron: '0 * * * *'  # Runs hourly
-  workflow_dispatch:     # Manual trigger option
+    - cron: '0 * * * *'  # Hourly sync
+  workflow_dispatch:     # Manual trigger
 
 jobs:
   sync:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write  # Explicitly grant write permission
+    
     steps:
-      # --- Step 1: Checkout with write permissions ---
+      # --- Step 1: Checkout with write access ---
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0  # Required for git diff to work properly
-          persist-credentials: true  # Essential for push access
+          fetch-depth: 0  # Required for proper git history
+          token: ${{ secrets.GITHUB_TOKEN }}  # Explicit token usage
 
-      # --- Step 2: Verify secrets exist (debug) ---
-      - name: Debug - Verify Secrets
-        run: |
-          echo "::group::Secrets Debug Info"
-          echo "COLLECTION_ID length: ${#SECRET_COLLECTION_ID}"
-          echo "POSTMAN_API_KEY length: ${#SECRET_POSTMAN_API_KEY}"
-          echo "::endgroup::"
-        env:
-          SECRET_COLLECTION_ID: ${{ secrets.COLLECTION_ID }}
-          SECRET_POSTMAN_API_KEY: ${{ secrets.POSTMAN_API_KEY }}
-
-      # --- Step 3: Fetch Postman Collection ---
+      # --- Step 2: Fetch Postman Collection ---
       - name: Fetch Postman Collection
         id: fetch
         run: |
@@ -38,21 +30,18 @@ jobs:
             -H "X-API-Key: ${{ secrets.POSTMAN_API_KEY }}" \
             "https://api.getpostman.com/collections/${{ secrets.COLLECTION_ID }}")
           
-          echo "HTTP Status: $HTTP_STATUS"
-          
           if [[ $HTTP_STATUS -ne 200 ]]; then
-            echo "::error::Postman API request failed (HTTP $HTTP_STATUS)"
-            echo "Response body:"
+            echo "::error::Postman API failed (HTTP $HTTP_STATUS)"
             cat "postman-collections/collection.json"
             exit 1
           fi
-          
-          echo "Collection successfully downloaded"
           echo "::endgroup::"
 
-      # --- Step 4: Commit and Push Changes ---
+      # --- Step 3: Commit and Push Changes ---
       - name: Commit and Push Changes
         if: steps.fetch.outcome == 'success'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}  # Alternative token reference
         run: |
           echo "::group::Git Operations"
           # Configure git
@@ -65,8 +54,11 @@ jobs:
           if ! git diff-index --quiet HEAD --; then
             echo "Changes detected - committing"
             git commit -m "Auto-update Postman Collection [$(date +'%Y-%m-%d %H:%M')]"
-            git pull --rebase  # Prevent race conditions
-            git push
+            
+            # Use token-based authentication
+            git remote set-url origin https://x-access-token:$GH_TOKEN@github.com/$GITHUB_REPOSITORY.git
+            git pull --rebase
+            git push origin HEAD:$GITHUB_REF_NAME
             echo "Changes pushed successfully"
           else
             echo "No changes detected"
