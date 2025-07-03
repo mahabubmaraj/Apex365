@@ -3,67 +3,72 @@ name: Sync Postman Collection to GitHub
 on:
   schedule:
     - cron: '0 * * * *'  # Runs hourly
-  workflow_dispatch:     # Manual trigger
+  workflow_dispatch:     # Manual trigger option
 
 jobs:
   sync:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout repo
+      # --- Step 1: Checkout with write permissions ---
+      - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Required for git diff to work properly
+          persist-credentials: true  # Essential for push access
 
-      # --- DEBUG: Verify secrets are loaded ---
+      # --- Step 2: Verify secrets exist (debug) ---
       - name: Debug - Verify Secrets
         run: |
           echo "::group::Secrets Debug Info"
-          echo "COLLECTION_ID exists: ${{ secrets.COLLECTION_ID != '' }}"
-          echo "POSTMAN_API_KEY exists: ${{ secrets.POSTMAN_API_KEY != '' }}"
+          echo "COLLECTION_ID length: ${#SECRET_COLLECTION_ID}"
+          echo "POSTMAN_API_KEY length: ${#SECRET_POSTMAN_API_KEY}"
           echo "::endgroup::"
+        env:
+          SECRET_COLLECTION_ID: ${{ secrets.COLLECTION_ID }}
+          SECRET_POSTMAN_API_KEY: ${{ secrets.POSTMAN_API_KEY }}
 
-      # --- DEBUG: Test API connectivity ---
-      - name: Debug - Test Postman API
-        run: |
-          echo "::group::Testing Postman API"
-          echo "URL: https://api.getpostman.com/collections/${{ secrets.COLLECTION_ID }}"
-          curl -v -H "X-API-Key: ${{ secrets.POSTMAN_API_KEY }}" \
-            "https://api.getpostman.com/collections/${{ secrets.COLLECTION_ID }}" \
-            -o /dev/null 2>&1 | grep -E "HTTP|<"
-          echo "::endgroup::"
-
-      # --- Main Fetch Step (with error handling) ---
+      # --- Step 3: Fetch Postman Collection ---
       - name: Fetch Postman Collection
         id: fetch
         run: |
           echo "::group::Fetching Collection"
-          HTTP_CODE=$(curl -s -o "postman-collections/collection.json" -w "%{http_code}" \
+          mkdir -p postman-collections
+          
+          HTTP_STATUS=$(curl -s -o "postman-collections/collection.json" -w "%{http_code}" \
             -H "X-API-Key: ${{ secrets.POSTMAN_API_KEY }}" \
             "https://api.getpostman.com/collections/${{ secrets.COLLECTION_ID }}")
           
-          echo "HTTP Status: $HTTP_CODE"
-          if [[ $HTTP_CODE -ne 200 ]]; then
-            echo "::error::Failed to fetch collection (HTTP $HTTP_CODE)"
+          echo "HTTP Status: $HTTP_STATUS"
+          
+          if [[ $HTTP_STATUS -ne 200 ]]; then
+            echo "::error::Postman API request failed (HTTP $HTTP_STATUS)"
             echo "Response body:"
             cat "postman-collections/collection.json"
             exit 1
           fi
+          
+          echo "Collection successfully downloaded"
           echo "::endgroup::"
 
-      # --- DEBUG: Verify downloaded file ---
-      - name: Debug - Verify Collection File
+      # --- Step 4: Commit and Push Changes ---
+      - name: Commit and Push Changes
         if: steps.fetch.outcome == 'success'
         run: |
-          echo "::group::File Contents"
-          head -n 5 postman-collections/collection.json
-          echo "..."
-          tail -n 5 postman-collections/collection.json
-          echo "::endgroup::"
-
-      # --- Commit Changes ---
-      - name: Commit Changes
-        if: steps.fetch.outcome == 'success'
-        run: |
+          echo "::group::Git Operations"
+          # Configure git
           git config --global user.name "GitHub Actions"
           git config --global user.email "actions@github.com"
+          
+          # Check for changes
           git add postman-collections/collection.json
-          git diff --quiet && git diff --staged --quiet || \
-            (git commit -m "Auto-update Postman Collection [$(date +'%Y-%m-%d %H:%M')]" && git push)
+          
+          if ! git diff-index --quiet HEAD --; then
+            echo "Changes detected - committing"
+            git commit -m "Auto-update Postman Collection [$(date +'%Y-%m-%d %H:%M')]"
+            git pull --rebase  # Prevent race conditions
+            git push
+            echo "Changes pushed successfully"
+          else
+            echo "No changes detected"
+          fi
+          echo "::endgroup::"
