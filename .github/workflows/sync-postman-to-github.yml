@@ -2,9 +2,8 @@ name: Sync Postman Collection to GitHub
 
 on:
   schedule:
-    # Runs every hour (adjust as needed)
-    - cron: '0 * * * *'
-  workflow_dispatch: # Allows manual triggers
+    - cron: '0 * * * *'  # Runs hourly
+  workflow_dispatch:     # Manual trigger
 
 jobs:
   sync:
@@ -13,16 +12,58 @@ jobs:
       - name: Checkout repo
         uses: actions/checkout@v4
 
-      - name: Fetch Postman Collection
+      # --- DEBUG: Verify secrets are loaded ---
+      - name: Debug - Verify Secrets
         run: |
-          curl -s -H "X-API-Key: ${{ secrets.POSTMAN_API_KEY }}" \
-            "https://api.getpostman.com/collections/${{ secrets.COLLECTION_ID }}" \
-            -o postman-collections/your-collection.json
+          echo "::group::Secrets Debug Info"
+          echo "COLLECTION_ID exists: ${{ secrets.COLLECTION_ID != '' }}"
+          echo "POSTMAN_API_KEY exists: ${{ secrets.POSTMAN_API_KEY != '' }}"
+          echo "::endgroup::"
 
-      - name: Commit & Push Changes
+      # --- DEBUG: Test API connectivity ---
+      - name: Debug - Test Postman API
+        run: |
+          echo "::group::Testing Postman API"
+          echo "URL: https://api.getpostman.com/collections/${{ secrets.COLLECTION_ID }}"
+          curl -v -H "X-API-Key: ${{ secrets.POSTMAN_API_KEY }}" \
+            "https://api.getpostman.com/collections/${{ secrets.COLLECTION_ID }}" \
+            -o /dev/null 2>&1 | grep -E "HTTP|<"
+          echo "::endgroup::"
+
+      # --- Main Fetch Step (with error handling) ---
+      - name: Fetch Postman Collection
+        id: fetch
+        run: |
+          echo "::group::Fetching Collection"
+          HTTP_CODE=$(curl -s -o "postman-collections/collection.json" -w "%{http_code}" \
+            -H "X-API-Key: ${{ secrets.POSTMAN_API_KEY }}" \
+            "https://api.getpostman.com/collections/${{ secrets.COLLECTION_ID }}")
+          
+          echo "HTTP Status: $HTTP_CODE"
+          if [[ $HTTP_CODE -ne 200 ]]; then
+            echo "::error::Failed to fetch collection (HTTP $HTTP_CODE)"
+            echo "Response body:"
+            cat "postman-collections/collection.json"
+            exit 1
+          fi
+          echo "::endgroup::"
+
+      # --- DEBUG: Verify downloaded file ---
+      - name: Debug - Verify Collection File
+        if: steps.fetch.outcome == 'success'
+        run: |
+          echo "::group::File Contents"
+          head -n 5 postman-collections/collection.json
+          echo "..."
+          tail -n 5 postman-collections/collection.json
+          echo "::endgroup::"
+
+      # --- Commit Changes ---
+      - name: Commit Changes
+        if: steps.fetch.outcome == 'success'
         run: |
           git config --global user.name "GitHub Actions"
           git config --global user.email "actions@github.com"
-          git add .
+          git add postman-collections/collection.json
           git diff --quiet && git diff --staged --quiet || \
-            (git commit -m "Auto-update Postman Collection" && git push)
+            (git commit -m "Auto-update Postman Collection [$(date +'%Y-%m-%d %H:%M')]" && git push)
